@@ -1,7 +1,9 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
-using Microsoft.WindowsAzure.Storage;
-using Microsoft.WindowsAzure.Storage.Blob;
+using Azure;
+using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
 
 namespace ManageStorageTiers
 {
@@ -17,99 +19,83 @@ namespace ManageStorageTiers
 
         static async Task DoWorkAsync()
         {
-            CloudBlobClient cloudBlobClient = null;
-            CloudBlobContainer cloudBlobContainer = null;
+            string connectionString = Environment.GetEnvironmentVariable("STORAGE_CONNECTION_STRING");
+            BlobServiceClient blobServiceClient = new BlobServiceClient(connectionString);
 
-            // Connect to the user's storage account and create a reference to the blob container holding the sample blobs
-            try
-            {
-                Console.WriteLine("Connecting to blob storage");
-                string storageAccountConnectionString = Environment.GetEnvironmentVariable("CONNECTION_STRING");
-                string blobContainerName = Environment.GetEnvironmentVariable("CONTAINER_NAME");
+            string containerName = Environment.GetEnvironmentVariable("CONTAINER_NAME");
+            BlobContainerClient blobContainerClient = blobServiceClient.GetBlobContainerClient(containerName);
 
-                CloudStorageAccount cloudStorageAccount = CloudStorageAccount.Parse(storageAccountConnectionString);
-                cloudBlobClient = cloudStorageAccount.CreateCloudBlobClient();
-                cloudBlobContainer = cloudBlobClient.GetContainerReference(blobContainerName);
-                Console.WriteLine("Connected");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Failed to connect to storage account or container: {ex.Message}");
-                return;
-            }
+            // Add metadata to containers and blobs
+            //await AddContainerMetadataAsync(blobContainerClient);
+            //await AddBlobMetadataAsync (blobContainerClient);
 
             // Display the details of the blobs
-            await ManageBlobMetadata(cloudBlobContainer);
+            await DisplayBlobMetadata(blobContainerClient);
         }
-        private static async Task ManageBlobMetadata(CloudBlobContainer cloudBlobContainer)
+        private static async Task DisplayBlobMetadata(BlobContainerClient blobContainerClient)
         {
-            try
+
+            Console.WriteLine("Container Properties");
+            Console.WriteLine("------------------------------------------------------------");
+            Response<BlobContainerProperties> response = await blobContainerClient.GetPropertiesAsync();
+            BlobContainerProperties containerProperties = response.Value;
+            
+            Console.WriteLine($"Container name  : {blobContainerClient.Name}");
+            Console.WriteLine($"  Last modified : {containerProperties.LastModified}");
+
+            Console.WriteLine("  Container Metadata");
+            foreach (var key in containerProperties.Metadata.Keys)
             {
-                // Find the details for each blob
-                Console.WriteLine("Fetching the details of all blobs");
-                BlobContinuationToken blobContinuationToken = null;
-                do
+                var value = containerProperties.Metadata[key];
+                Console.WriteLine($"    Key: {key}  Value: {value}");
+            }
+
+            Console.WriteLine("Blob Properties");
+            Console.WriteLine("------------------------------------------------------------");
+            AsyncPageable<BlobItem> blobs = blobContainerClient.GetBlobsAsync(BlobTraits.Metadata);
+            await foreach (var blobItem in blobs)
+            {                
+                // Print out some useful blob properties
+                Console.WriteLine($"Blob name: {blobItem.Name}" );
+                Console.WriteLine($"  Created on   : {blobItem.Properties.CreatedOn}");
+                Console.WriteLine($"  Last modified: {blobItem.Properties.LastModified}");
+
+                // Enumerate the metadata
+                Console.WriteLine("  Blob Metadata");
+                foreach (var key in blobItem.Metadata.Keys)
                 {
-                    // Fetch container attributes in order to populate the container's properties and metadata.
-                    await cloudBlobContainer.FetchAttributesAsync();
-
-                    // Enumerate the container's metadata.
-                    Console.WriteLine("\tName: {0}", cloudBlobContainer.Name);
-                    Console.WriteLine("\tLast modified: {0}", cloudBlobContainer.Properties.LastModified);
-
-                    // Add metadata
-                    // await AddContainerMetadataAsync(cloudBlobContainer);
-
-                    Console.WriteLine("Container metadata:");
-                    foreach (var metadataItem in cloudBlobContainer.Metadata)
-                    {
-                        Console.WriteLine("\tKey: {0}", metadataItem.Key);
-                        Console.WriteLine("\tValue: {0}", metadataItem.Value);
-                    }
-                    Console.WriteLine("Blob properties:");
-                    var results = await cloudBlobContainer.ListBlobsSegmentedAsync(null, blobContinuationToken);
-                    blobContinuationToken = results.ContinuationToken;
-                    foreach (CloudBlockBlob item in results.Results)
-                    {
-
-                        // The new package supports syncronous method
-                        await item.FetchAttributesAsync();
-
-                        // Add metadata
-                        // await AddBlobMetadataAsync(item);
-
-                        Console.WriteLine("\tName: {0}", item.Name);
-                        Console.WriteLine("\tLast modified: {0}", item.Properties.LastModified);
-                        Console.WriteLine("Blob metadata:");
-                        foreach (var metadataItem in item.Metadata)
-                        {
-                            Console.WriteLine("\tKey: {0}", metadataItem.Key);
-                            Console.WriteLine("\tValue: {0}", metadataItem.Value);
-                        }
-                    }
-                } while (blobContinuationToken != null);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Failed to retrieve details of blobs: {ex.Message}");
-                return;
+                    var value = blobItem.Metadata[key];
+                    Console.WriteLine($"    Key: {key}  Value: {value}");
+                }               
             }
         }
-        public static async Task AddContainerMetadataAsync(CloudBlobContainer cloudBlobContainer)
+
+        public static async Task AddContainerMetadataAsync(BlobContainerClient blobContainerClient)
         {
+            Response<BlobContainerProperties> response = await blobContainerClient.GetPropertiesAsync();
+            IDictionary<string, string> metadata = response.Value.Metadata;
+
             // Add metadata to the container
-            cloudBlobContainer.Metadata.Add("docType", "safetyReports");
+            metadata.Add("docType", "safetyReports");
 
             // Save the updated container metadata
-            await cloudBlobContainer.SetMetadataAsync();
+            await blobContainerClient.SetMetadataAsync(metadata);
         }
-        public static async Task AddBlobMetadataAsync(CloudBlockBlob cloudBlob)
-        {
-            // Add metadata to the blob
-            cloudBlob.Metadata.Add("reportStatus", "included");
 
-            // Save the updated blob metadata
-            await cloudBlob.SetMetadataAsync();
+        public static async Task AddBlobMetadataAsync(BlobContainerClient blobContainerClient)
+        {
+            AsyncPageable<BlobItem> blobs = blobContainerClient.GetBlobsAsync(BlobTraits.Metadata);
+            await foreach (var blobItem in blobs)
+            {
+                IDictionary<string, string> metadata = blobItem.Metadata;
+
+                // Add a value to the metadata for the blob
+                metadata.Add("reportStatus", "included");
+
+                // You need a BlobClient object to update the metadata for a blob
+                BlobClient blobClient = blobContainerClient.GetBlobClient(blobItem.Name);
+                await blobClient.SetMetadataAsync(metadata);
+            }
         }
     }
 }
